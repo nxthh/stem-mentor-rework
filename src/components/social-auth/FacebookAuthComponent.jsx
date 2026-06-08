@@ -1,0 +1,126 @@
+import {
+  FacebookAuthProvider,
+  onAuthStateChanged,
+  signInWithPopup,
+  signOut,
+} from "firebase/auth";
+import { useEffect, useState } from "react";
+import { auth } from "../../firebase/firebase-config";
+import {
+  useLoginMutation,
+  useRegisterMutation,
+} from "../../features/auth/authApi";
+import { useDispatch } from "react-redux";
+import { useNavigate } from "react-router-dom";
+import { toast } from "react-toastify";
+import { jwtDecode } from "jwt-decode";
+import { setCredentials } from "../../features/auth/authSlice";
+
+export const useLoginWithFacebook = (role = "student") => {
+  const [signUpRequest] = useRegisterMutation();
+  const [loginRequest] = useLoginMutation();
+  const [error, setError] = useState(null);
+  const [pending, setPending] = useState(false);
+  const [user, setUser] = useState(null);
+
+  const provider = new FacebookAuthProvider();
+  const dispatch = useDispatch();
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
+      setUser(firebaseUser || null);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  const facebookLogin = async () => {
+    setPending(true);
+    setError(null);
+
+    try {
+      const res = await signInWithPopup(auth, provider);
+      const user = res.user;
+      console.log("✅ Facebook Info:", user);
+
+      const tempPassword = `${user.displayName?.substring(0, 4) || "User"}${
+        import.meta.env.VITE_SECRET_KEY
+      }`;
+
+      let loginResult;
+      const facebookEmail =
+        user.providerData && user.providerData.length > 0
+          ? user.providerData[0].email
+          : null;
+      console.log("googleEmail", facebookEmail);
+      try {
+        await signUpRequest({
+          username:
+            "FacebookLogin_" +
+            (user.displayName?.replace(/\s+/g, "") || "user"),
+          full_name: user.displayName,
+          password: tempPassword,
+          role: role,
+          email: facebookEmail,
+          gender: "UNKNOWN",
+          bio: "BIO",
+          address: "UNKNOWN",
+          profile_url: user.photoURL,
+          phone_number: "012345678",
+          date_of_birth: "2000-01-01",
+        }).unwrap();
+
+        toast.success("✅ Successfully registered via Facebook");
+      } catch (err) {
+        if (err?.status === 400 || err?.status === 409) {
+          toast.success("✅ Successfully logged in via Facebook");
+          loginResult = await loginRequest({
+            identifier: facebookEmail,
+            password: tempPassword,
+          }).unwrap();
+        } else {
+          throw err;
+        }
+
+        // Decode JWT and store in Redux
+        if (loginResult?.access_token) {
+          const decoded = jwtDecode(loginResult.access_token);
+          const loggedUser = {
+            id: decoded.id,
+            name: decoded.sub,
+            role: decoded.role,
+            full_name: decoded.full_name,
+          };
+
+          dispatch(
+            setCredentials({
+              user: loggedUser,
+              token: loginResult.access_token,
+            })
+          );
+
+          navigate("/");
+        }
+      }
+    } catch (err) {
+      console.error("❌ Facebook login error:", err);
+      toast.error("Facebook login failed");
+      setError(err);
+    } finally {
+      setPending(false);
+    }
+  };
+
+  const facebookLogout = async () => {
+    try {
+      await signOut(auth);
+      console.log("✅ Signed out successfully!");
+      setUser(null);
+    } catch (err) {
+      console.error("❌ Sign out error:", err);
+      setError(err);
+    }
+  };
+
+  return { facebookLogin, facebookLogout, pending, error, user };
+};
